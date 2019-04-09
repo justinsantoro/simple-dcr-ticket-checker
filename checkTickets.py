@@ -2,8 +2,12 @@
 
 import os
 import datetime
+import io
+import traceback
+import sys
 import requests
 import yaml
+
 
 script_path = os.path.dirname(os.path.realpath(__file__))
 dcrdata_api_url = "https://dcrdata.org/api/"
@@ -21,6 +25,16 @@ def log(message):
         f.write(str(now.date()) + " - " + str(now.time()) + ": " + message + "\n")
 
 
+def _get_traceback_string(ex_type, ex, tb):
+    output = io.StringIO()
+    traceback.print_exception(ex_type, ex, tb, file=output)
+    return output.getvalue()
+
+
+def log_unexpected(etype, value, tb):
+    log("\n" + _get_traceback_string(etype, value, tb)[:-1])
+
+
 def get_ticket_ids(file_path):
     with open(file_path, 'r') as ticket_ids:
         return [line.rstrip('\n').rstrip('\r') for line in ticket_ids]
@@ -28,17 +42,15 @@ def get_ticket_ids(file_path):
 
 def check_ticket(ticket_id):
     pre_vote = ['immature', 'live']
-    try:
-        r = requests.get(dcrdata_api_tinfo.format(ticket_id))
-        r.raise_for_status()
-        tx = r.json()
-        log("checked ticket " + ticket_id)
-        if tx['status'] not in pre_vote:
-            return tx
-        else:
-            return None
-    except Exception as e:
-        print(e)
+    r = requests.get(dcrdata_api_tinfo.format(ticket_id))
+    if r.status_code != 200:
+        log('check_ticket(): ' + r.text)
+    tx = r.json()
+    log("checked ticket " + ticket_id)
+    if tx['status'] not in pre_vote:
+        return tx
+    else:
+        return None
 
 
 def get_event_block_height(tx):
@@ -49,12 +61,10 @@ def get_event_block_height(tx):
 
 
 def get_current_block_height():
-    try:
-        r = requests.get(dcrdata_api_best)
-        r.raise_for_status()
-        return int(r.json()['height'])
-    except Exception as e:
-        print(e)
+    r = requests.get(dcrdata_api_best)
+    if r.status_code != 200:
+        log('get_current_block_height(): ' + r.text)
+    return int(r.json()['height'])
 
 
 def get_funds_release_time(tx, utc_offset):
@@ -125,5 +135,6 @@ def main():
 
 
 if __name__ == '__main__':
+    sys.excepthook = log_unexpected
     log('running...')
     main()
