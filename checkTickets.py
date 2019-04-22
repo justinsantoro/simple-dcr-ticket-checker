@@ -9,13 +9,16 @@ import requests
 import yaml
 
 
-script_path = os.path.dirname(os.path.realpath(__file__))
 dcrdata_api_url = "https://dcrdata.org/api/"
 dcrdata_api_tinfo = dcrdata_api_url + "tx/{}/tinfo"
 dcrdata_api_best = dcrdata_api_url + "block/best"
+pi_api_url = "https://proposals.decred.org/api/v1/proposals/activevote"
 telegrambot_api_url = "https://api.telegram.org/bot{}/{}"
+
+script_path = os.path.dirname(os.path.realpath(__file__))
 log_path = script_path + "/log.txt"
 config_path = script_path + "/config.yml"
+checked_votes_path = script_path + '/checked_votes.txt'
 config = None
 
 
@@ -35,22 +38,27 @@ def log_unexpected(etype, value, tb):
     log("\n" + _get_traceback_string(etype, value, tb)[:-1])
 
 
-def get_ticket_ids(file_path):
-    with open(file_path, 'r') as ticket_ids:
-        return [line.rstrip('\n').rstrip('\r') for line in ticket_ids]
+def read_file(file_path):
+    with open(file_path, 'r') as f:
+        return [line.rstrip('\n').rstrip('\r') for line in f]
 
 
-def check_ticket(ticket_id):
-    pre_vote = ['immature', 'live']
+def get_active_votes():
+    r = requests.get(pi_api_url)
+    if r.status_code != 200:
+        log('get_active_votes(): ' + r.text)
+    votes = r.json()['votes']
+    log('got {} active votes'.format(len(votes)))
+    return votes
+
+
+def get_ticket(ticket_id):
     r = requests.get(dcrdata_api_tinfo.format(ticket_id))
     if r.status_code != 200:
         log('check_ticket(): ' + r.text)
     tx = r.json()
     log("checked ticket " + ticket_id)
-    if tx['status'] not in pre_vote:
-        return tx
-    else:
-        return None
+    return tx
 
 
 def get_event_block_height(tx):
@@ -78,21 +86,39 @@ def get_funds_release_time(tx, utc_offset):
     return mature_timezone.strftime('%A %B %d, around %I:%M%p')
 
 
-def get_caption(tx):
-    return """Ticket {}!
-            Funds will be available on {}.
-            """.format(tx['status'], get_funds_release_time(tx, config['utc_offset']))
+def short_id(txid):
+    return txid[:4] + '...' + txid[-4:]
 
 
-def notify(bot_token, chat_ids, tx):
+def eligible_to_vote_message(eligible, vote):
+    return '<b>{}</b> Tickets now eligible to vote on proposal: ' \
+           '<a href="https://proposals.decred.org/proposals/{}">{}</a>\n'.format(eligible,
+                                                                                 vote['startvote']['vote']['token'],
+                                                                                 vote['proposal']['name'])
+
+
+def ticket_event_message(tx, txid):
+    return "Ticket <code>{}</code> <b>{}</b>! Funds will be available on <i>{}</i>.\n".format(short_id(txid),
+                                                                  tx['status'],
+                                                                  get_funds_release_time(tx, config['utc_offset']))
+
+
+def notify(bot_token, chat_ids, ticket_message, vote_message):
     command = 'sendMessage'
-    payload = {'text': get_caption(tx)}
+    if vote_message and ticket_message:
+        text = '{} \n\n {}'.format(ticket_message, vote_message)
+    elif vote_message:
+        text = vote_message
+    else:
+        text = ticket_message
+    payload = {'text': text, 'parse_mode': 'HTML'}
     if type(chat_ids).__name__ != 'list':
         chat_ids = [chat_ids]
     for chat in chat_ids:
         payload['chat_id'] = chat
         try:
             r = requests.get(telegrambot_api_url.format(bot_token, command), params=payload)
+            print(r.url)
             r.raise_for_status()
             log('sent notification to telid: ' + str(chat))
         except Exception as e:
@@ -104,34 +130,60 @@ def parse_config(file_path):
         return yaml.load(f, Loader=yaml.BaseLoader)
 
 
-def write_active_tickets(file_path, tickets):
+def write_file(file_path, lines):
     with open(file_path, 'w') as f:
-        f.write(tickets)
+        f.write(lines)
+
+
+def check_tickets(ticket_ids):
+    message = ''
+    pre_vote = ['immature', 'live']
+    active_tickets = ''
+    for ticket in ticket_ids:
+        tx = get_ticket(ticket)
+        if tx['status'] in pre_vote:
+            active_tickets += ticket + '\n'
+        else:
+            message += ticket_event_message(tx, ticket)
+    write_file(config['tickets_file_path'], active_tickets)
+    log('wrote active tickets file ' + config['tickets_file_path'])
+    return message
+
+
+def check_active_votes(ticket_ids):
+    message = ''
+    checked_votes = read_file(checked_votes_path) if os.path.exists(checked_votes_path) else []
+    active_votes = get_active_votes()
+    active_votes_s = ''
+    for vote in active_votes:
+        token = vote['startvote']['vote']['token']
+        active_votes_s += token + '\n'
+        if token not in checked_votes:
+            eligible = 0
+            for ticket in ticket_ids:
+                if ticket in vote['startvotereply']['eligibletickets']:
+                    eligible += 1
+            if eligible:
+                message += eligible_to_vote_message(eligible, vote)
+    write_file(checked_votes_path, active_votes_s)
+    log('wrote active votes file ' + checked_votes_path)
+    return message
 
 
 def main():
     global config
     config = parse_config(config_path)
-    ticket_ids = get_ticket_ids(config['tickets_file_path'])
+    ticket_ids = read_file(config['tickets_file_path'])
 
     if ticket_ids:
-        active_tickets = ''
-        for ticket in ticket_ids:
-            tx = check_ticket(ticket)
-            # if ticket voted, missed, or expired send notification
-            if tx:
-                notify(config['bot_token'], config['tel_chat_ids'], tx)
-            else:
-                # append ticket to list to be checked again later
-                active_tickets += (ticket + '\n')
-        if active_tickets:
-            # re-write active tickets into file
-            write_active_tickets(config['tickets_file_path'], active_tickets)
-            log('rewrote active tickets')
-        else:
-            # if no more active tickets overwrite with empty file
-            open(config['tickets_file_path'], 'w').close()
-            log('rewrote empty file')
+        vote_message = None
+        ticket_message = check_tickets(ticket_ids)
+        if config['vote_eligibility']:
+            vote_message = check_active_votes(ticket_ids)
+        if ticket_message or vote_message:
+            notify(config['bot_token'], config['chat_ids'], ticket_message, vote_message)
+    else:
+        log('no tickets to check')
 
 
 if __name__ == '__main__':

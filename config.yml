@@ -5,8 +5,10 @@ tickets_file_path: /path/to/ticket/list/file
 bot_token: 123456789:randomstringoflettersandsymbols
 
 # chat(s) to send notifications to. can be single string or list of strings
-tel_chat_ids:
+chat_ids:
     - 12345678
 
 # UTC OFFSET for funds availability estimate
 utc_offset: 0
+
+vote_eligibility: true
