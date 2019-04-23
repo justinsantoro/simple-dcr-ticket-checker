@@ -12,3 +12,6 @@ chat_ids:
 utc_offset: 0
 
 vote_eligibility: true
+
+# delete old notification on next run
+delete_old: true

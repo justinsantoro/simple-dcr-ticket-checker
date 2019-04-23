@@ -7,6 +7,7 @@ import traceback
 import sys
 import requests
 import yaml
+import json
 
 
 dcrdata_api_url = "https://dcrdata.org/api/"
@@ -19,6 +20,7 @@ script_path = os.path.dirname(os.path.realpath(__file__))
 log_path = script_path + "/log.txt"
 config_path = script_path + "/config.yml"
 checked_votes_path = script_path + '/checked_votes.txt'
+to_delete = script_path + '/to_delete.txt'
 config = None
 
 
@@ -114,15 +116,19 @@ def notify(bot_token, chat_ids, ticket_message, vote_message):
     payload = {'text': text, 'parse_mode': 'HTML'}
     if type(chat_ids).__name__ != 'list':
         chat_ids = [chat_ids]
+
+    sent_messages = ''
     for chat in chat_ids:
         payload['chat_id'] = chat
-        try:
-            r = requests.get(telegrambot_api_url.format(bot_token, command), params=payload)
-            print(r.url)
-            r.raise_for_status()
+        r = requests.get(telegrambot_api_url.format(bot_token, command), params=payload)
+        print(r.url)
+        if r.status_code != 200:
+            log('notify(): ' + r.text)
+        else:
             log('sent notification to telid: ' + str(chat))
-        except Exception as e:
-            print(e)
+            sent_messages += json.dumps({"message_id": r.json()['message_id'], "chat_id": chat}) + "\n"
+
+    write_file(to_delete, sent_messages)
 
 
 def parse_config(file_path):
@@ -170,11 +176,27 @@ def check_active_votes(ticket_ids):
     return message
 
 
+def delete_old(bot_token):
+    command = 'deleteMessage'
+    if os.path.exists(to_delete):
+        messages = read_file(to_delete)
+        for message in messages:
+            r = requests.get(telegrambot_api_url.format(bot_token, command), params=json.loads(message))
+            print(r.url)
+            if r.status_code != 200:
+                log('notify(): ' + r.text)
+            else:
+                log('deleted old message: ' + message)
+
+
 def main():
     global config
     config = parse_config(config_path)
-    ticket_ids = read_file(config['tickets_file_path'])
 
+    if config['delete_old']:
+        delete_old(config['bot_token'])
+
+    ticket_ids = read_file(config['tickets_file_path'])
     if ticket_ids:
         vote_message = None
         ticket_message = check_tickets(ticket_ids)
