@@ -49,18 +49,22 @@ def get_active_votes():
     r = requests.get(pi_api_url)
     if r.status_code != 200:
         log('get_active_votes(): ' + r.text)
-    votes = r.json()['votes']
-    log('got {} active votes'.format(len(votes)))
-    return votes
+        return []
+    else:
+        votes = r.json()['votes']
+        log('got {} active votes'.format(len(votes)))
+        return votes
 
 
 def get_ticket(ticket_id):
     r = requests.get(dcrdata_api_tinfo.format(ticket_id))
     if r.status_code != 200:
         log('check_ticket(): ' + r.text)
-    tx = r.json()
-    log("checked ticket " + ticket_id)
-    return tx
+        return None
+    else:
+        tx = r.json()
+        log("checked ticket " + ticket_id)
+        return tx
 
 
 def get_event_block_height(tx):
@@ -74,6 +78,7 @@ def get_current_block_height():
     r = requests.get(dcrdata_api_best)
     if r.status_code != 200:
         log('get_current_block_height(): ' + r.text)
+        return 0
     return int(r.json()['height'])
 
 
@@ -147,10 +152,13 @@ def check_tickets(ticket_ids):
     active_tickets = ''
     for ticket in ticket_ids:
         tx = get_ticket(ticket)
-        if tx['status'] in pre_vote:
-            active_tickets += ticket + '\n'
+        if tx:
+            if tx['status'] in pre_vote:
+                active_tickets += ticket + '\n'
+            else:
+                message += ticket_event_message(tx, ticket)
         else:
-            message += ticket_event_message(tx, ticket)
+            active_tickets += ticket + '\n'
     write_file(config['tickets_file_path'], active_tickets)
     log('wrote active tickets file ' + config['tickets_file_path'])
     return message
